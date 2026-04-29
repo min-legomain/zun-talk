@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -36,7 +37,19 @@ func (m inputMode) String() string {
 }
 
 func main() {
+	charKey := flag.String("char", config.DefaultCharKey, "キャラクター選択: zundamon / tsumugi / metan")
+	flag.Parse()
+
 	cfg := config.Load()
+
+	if err := config.LoadCharacters(cfg.CharSettingsPath); err != nil {
+		log.Fatalf("キャラクター設定の読み込みに失敗: %v", err)
+	}
+
+	char, ok := config.Characters[*charKey]
+	if !ok {
+		log.Fatalf("不明なキャラクター: %s\n使えるキャラ: zundamon, tsumugi, metan", *charKey)
+	}
 
 	if cfg.AnthropicAPIKey == "" {
 		log.Fatal("ANTHROPIC_API_KEY が設定されていません")
@@ -46,16 +59,28 @@ func main() {
 		log.Fatalf("player.Init: %v", err)
 	}
 
-	claudeClient := claude.NewClient(cfg.AnthropicAPIKey)
-	voicevoxClient := voicevox.NewClient(cfg.VoicevoxURL, config.VoicevoxSpeakerID)
+	claudeClient := claude.NewClient(cfg.AnthropicAPIKey, char.Prompt)
+	voicevoxClient := voicevox.NewClient(cfg.VoicevoxURL, char.SpeakerID)
 	whisperClient := stt.NewClient(cfg.WhisperBinary, cfg.WhisperModel)
+
+	switchChar := func(key string) {
+		c, ok := config.Characters[key]
+		if !ok {
+			fmt.Printf("不明なキャラクター: %s\n使えるキャラ: zundamon, tsumugi, metan\n", key)
+			return
+		}
+		char = c
+		claudeClient.SetSystemPrompt(c.Prompt)
+		voicevoxClient.SetSpeakerID(c.SpeakerID)
+		fmt.Printf("キャラクター変更: %s\n", c.Name)
+	}
 
 	mode := modeText
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Println("zun-talk へようこそのだ！")
+	fmt.Printf("zun-talk へようこそ！（キャラ: %s）\n", char.Name)
 	fmt.Printf("現在のモード: %s\n", mode)
-	fmt.Println("モード切替: :text / :ptt / :vad | 終了: :quit")
+	fmt.Println("モード切替: :text / :ptt / :vad | キャラ切替: :char <名前> | 終了: :quit")
 	fmt.Println()
 
 	for {
@@ -67,6 +92,10 @@ func main() {
 			}
 			line := strings.TrimSpace(scanner.Text())
 
+			if strings.HasPrefix(line, ":char") {
+				handleCharCommand(line, switchChar, &char)
+				continue
+			}
 			if handleCommand(&mode, line) {
 				continue
 			}
@@ -74,17 +103,21 @@ func main() {
 				continue
 			}
 
-			if err := processText(claudeClient, voicevoxClient, line); err != nil {
+			if err := processText(claudeClient, voicevoxClient, char.Name, line); err != nil {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 
 		case modePTT:
-			fmt.Println("Enterを押して録音 | :text / :vad / :quit")
+			fmt.Printf("Enterを押して録音 | :char <名前> でキャラ切替 | :text / :vad / :quit\n")
 			fmt.Print("> ")
 			if !scanner.Scan() {
 				return
 			}
 			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, ":char") {
+				handleCharCommand(line, switchChar, &char)
+				continue
+			}
 			if handleCommand(&mode, line) {
 				continue
 			}
@@ -95,7 +128,7 @@ func main() {
 				continue
 			}
 
-			if err := processVoice(claudeClient, voicevoxClient, whisperClient, wavData); err != nil {
+			if err := processVoice(claudeClient, voicevoxClient, whisperClient, char.Name, wavData); err != nil {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 
@@ -108,11 +141,20 @@ func main() {
 				continue
 			}
 
-			if err := processVoice(claudeClient, voicevoxClient, whisperClient, wavData); err != nil {
+			if err := processVoice(claudeClient, voicevoxClient, whisperClient, char.Name, wavData); err != nil {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 		}
 	}
+}
+
+func handleCharCommand(line string, switchChar func(string), char *config.Character) {
+	key := strings.TrimSpace(strings.TrimPrefix(line, ":char"))
+	if key == "" {
+		fmt.Printf("現在のキャラ: %s\n使えるキャラ: zundamon, tsumugi, metan\n", char.Name)
+		return
+	}
+	switchChar(key)
 }
 
 func handleCommand(mode *inputMode, line string) bool {
@@ -133,20 +175,18 @@ func handleCommand(mode *inputMode, line string) bool {
 		fmt.Printf("現在のモード: %s\n", *mode)
 		return true
 	case ":quit", ":q":
-		fmt.Println("さようならのだ！")
+		fmt.Println("またね！")
 		os.Exit(0)
 	}
 	return false
 }
 
-func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, text string) error {
+func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, charName, text string) error {
 	fmt.Printf("Claude に送信: %s\n", text)
-	fmt.Print("ずんだもん: ")
+	fmt.Printf("%s: ", charName)
 
-	// WAVキュー: 合成goroutineが詰み、再生goroutineが順番に消費する
 	wavCh := make(chan []byte, 4)
 
-	// 再生goroutine: WAVを順番に再生
 	playErrCh := make(chan error, 1)
 	go func() {
 		var firstErr error
@@ -160,7 +200,6 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, t
 		playErrCh <- firstErr
 	}()
 
-	// 合成goroutine: 文を受け取りWAVを生成してwavChへ
 	sentenceCh := make(chan string, 8)
 	synthErrCh := make(chan error, 1)
 	go func() {
@@ -180,7 +219,6 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, t
 		synthErrCh <- firstErr
 	}()
 
-	// Claude ストリーミング: 文単位でsentenceChへ送出
 	streamErr := claudeClient.ChatStream(text, func(sentence string) error {
 		fmt.Print(sentence)
 		sentenceCh <- sentence
@@ -210,7 +248,7 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, t
 	return nil
 }
 
-func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, whisperClient *stt.Client, wavData []byte) error {
+func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, whisperClient *stt.Client, charName string, wavData []byte) error {
 	fmt.Println("文字起こし中...")
 
 	text, err := whisperClient.Transcribe(wavData)
@@ -224,5 +262,5 @@ func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, 
 	}
 
 	fmt.Printf("あなた: %s\n", text)
-	return processText(claudeClient, voicevoxClient, text)
+	return processText(claudeClient, voicevoxClient, charName, text)
 }

@@ -9,21 +9,26 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-const systemPrompt = "あなたはずんだもんです。語尾に「〜のだ」「〜なのだ」をつけて、ずんだもん口調で話してください。明るく元気にふるまってください。"
-
 // 文末と判定するルーン
 var sentenceEnds = map[rune]bool{
 	'。': true, '！': true, '？': true, '、': true, '!': true, '?': true, '\n': true,
 }
 
 type Client struct {
-	api     *anthropic.Client
-	history []anthropic.MessageParam
+	api          *anthropic.Client
+	history      []anthropic.MessageParam
+	systemPrompt string
 }
 
-func NewClient(apiKey string) *Client {
+func NewClient(apiKey, systemPrompt string) *Client {
 	api := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return &Client{api: api}
+	return &Client{api: api, systemPrompt: systemPrompt}
+}
+
+// SetSystemPrompt はキャラクターを切り替える。会話履歴はリセットされる。
+func (c *Client) SetSystemPrompt(prompt string) {
+	c.systemPrompt = prompt
+	c.history = nil
 }
 
 // ChatStream はレスポンスをストリーミングし、文単位で cb を呼び出す。
@@ -35,7 +40,7 @@ func (c *Client) ChatStream(userInput string, cb func(sentence string) error) er
 		Model:     anthropic.F(anthropic.Model(config.ClaudeModel)),
 		MaxTokens: anthropic.F(int64(1024)),
 		System: anthropic.F([]anthropic.TextBlockParam{
-			anthropic.NewTextBlock(systemPrompt),
+			anthropic.NewTextBlock(c.systemPrompt),
 		}),
 		Messages: anthropic.F(c.history),
 	})

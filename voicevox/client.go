@@ -20,6 +20,10 @@ func NewClient(baseURL string, speakerID int) *Client {
 	return &Client{baseURL: baseURL, speakerID: speakerID}
 }
 
+func (c *Client) SetSpeakerID(id int) {
+	c.speakerID = id
+}
+
 func (c *Client) Synthesize(text string) ([]byte, error) {
 	query, err := c.audioQuery(text)
 	if err != nil {
