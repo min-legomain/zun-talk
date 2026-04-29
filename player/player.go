@@ -1,0 +1,86 @@
+package player
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"time"
+
+	"github.com/ebitengine/oto/v3"
+)
+
+var otoCtx *oto.Context
+
+func Init() error {
+	op := &oto.NewContextOptions{
+		SampleRate:   24000,
+		ChannelCount: 1,
+		Format:       oto.FormatSignedInt16LE,
+	}
+
+	ctx, ready, err := oto.NewContext(op)
+	if err != nil {
+		return fmt.Errorf("oto.NewContext: %w", err)
+	}
+	<-ready
+	otoCtx = ctx
+	return nil
+}
+
+func PlayWAV(wavData []byte) error {
+	if otoCtx == nil {
+		return fmt.Errorf("player not initialized: call Init() first")
+	}
+
+	// WAVヘッダをスキップしてPCMデータだけ取り出す
+	pcm, err := extractPCM(wavData)
+	if err != nil {
+		return fmt.Errorf("wav parse: %w", err)
+	}
+
+	player := otoCtx.NewPlayer(bytes.NewReader(pcm))
+	player.Play()
+	for player.IsPlaying() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return player.Close()
+}
+
+func extractPCM(wavData []byte) ([]byte, error) {
+	r := bytes.NewReader(wavData)
+
+	// RIFFヘッダ確認
+	var riff [4]byte
+	if err := binary.Read(r, binary.LittleEndian, &riff); err != nil {
+		return nil, err
+	}
+	if string(riff[:]) != "RIFF" {
+		return nil, fmt.Errorf("not a RIFF file")
+	}
+
+	r.Seek(12, 0) // RIFFサイズ(4) + WAVE(4) をスキップ
+
+	// dataチャンクを探す
+	for {
+		var chunkID [4]byte
+		var chunkSize uint32
+		if err := binary.Read(r, binary.LittleEndian, &chunkID); err != nil {
+			return nil, fmt.Errorf("dataチャンクが見つかりません")
+		}
+		if err := binary.Read(r, binary.LittleEndian, &chunkSize); err != nil {
+			return nil, err
+		}
+
+		if string(chunkID[:]) == "data" {
+			pcm := make([]byte, chunkSize)
+			if _, err := r.Read(pcm); err != nil {
+				return nil, err
+			}
+			return pcm, nil
+		}
+
+		// このチャンクをスキップ
+		pos, _ := r.Seek(0, 1)
+		r.Seek(pos+int64(chunkSize), 0)
+	}
+}
