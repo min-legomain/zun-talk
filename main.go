@@ -84,9 +84,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Printf("zun-talk へようこそ！（キャラ: %s）\n", char.Name)
-	fmt.Printf("現在のモード: %s\n", mode)
-	fmt.Println("モード切替: :text / :ptt / :vad | キャラ切替: :char <名前> | 終了: :quit")
-	fmt.Println()
+	fmt.Printf("コマンド一覧は :help で確認できます\n\n")
 
 	for {
 		if mode == modeVAD {
@@ -115,6 +113,38 @@ func main() {
 			handleCharCommand(line, switchChar, &char)
 			continue
 		}
+
+		if strings.HasPrefix(line, ":duet") {
+			parts := strings.Fields(line)
+			if len(parts) != 3 {
+				fmt.Println("使い方: :duet <キャラA> <キャラB>（例: :duet zundamon metan）")
+				continue
+			}
+			charA, okA := config.Characters[parts[1]]
+			charB, okB := config.Characters[parts[2]]
+			if !okA || !okB {
+				fmt.Println("不明なキャラクター。使えるキャラ: zundamon, tsumugi, metan")
+				continue
+			}
+			clientA := claude.NewClient(cfg.AnthropicAPIKey, charA.Prompt)
+			clientB := claude.NewClient(cfg.AnthropicAPIKey, charB.Prompt)
+			voiceA := voicevox.NewClient(cfg.VoicevoxURL, charA.SpeakerID)
+			voiceB := voicevox.NewClient(cfg.VoicevoxURL, charB.SpeakerID)
+			fmt.Printf("デュエット開始: %s × %s\n", charA.Name, charB.Name)
+			fmt.Println("Enter で会話続ける | 文字入力で参加 | :stop で終了")
+			runDuet(clientA, voiceA, charA.Name, clientB, voiceB, charB.Name, scanner)
+			fmt.Println("デュエット終了")
+			continue
+		}
+
+		if line == ":topic" {
+			const topicPrompt = "今から話せる面白い話題を3つ提案して。一言ずつで。"
+			if _, err := processText(claudeClient, voicevoxClient, char.Name, topicPrompt); err != nil {
+				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			}
+			continue
+		}
+
 		if handleCommand(&mode, line) {
 			continue
 		}
@@ -137,6 +167,17 @@ func main() {
 			}
 		}
 	}
+}
+
+func printHelp() {
+	fmt.Println("=== コマンド一覧 ===")
+	fmt.Println(":text / :ptt / :vad      入力モード切替")
+	fmt.Println(":char <名前>             キャラ切替 (zundamon / tsumugi / metan)")
+	fmt.Println(":duet <キャラA> <キャラB>  デュエット会話")
+	fmt.Println(":topic                  話題を3つ提案")
+	fmt.Println(":help                   このヘルプを表示")
+	fmt.Println(":quit                   終了")
+	fmt.Println("===================")
 }
 
 func handleCharCommand(line string, switchChar func(string), char *config.Character) {
@@ -164,6 +205,9 @@ func handleCommand(mode *inputMode, line string) bool {
 		return true
 	case ":mode":
 		fmt.Printf("現在のモード: %s\n", *mode)
+		return true
+	case ":help":
+		printHelp()
 		return true
 	case ":quit", ":q":
 		fmt.Println("またね！")
@@ -245,6 +289,79 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, c
 		return "", fmt.Errorf("再生エラー: %w", playErr)
 	}
 	return fullResponse.String(), nil
+}
+
+// runDuet はキャラA・Bが自律的に会話を続けるループ。
+// Enter で次のターンに進み、文字入力で会話に参加、:stop で終了。
+func runDuet(
+	clientA *claude.Client, voiceA *voicevox.Client, nameA string,
+	clientB *claude.Client, voiceB *voicevox.Client, nameB string,
+	scanner *bufio.Scanner,
+) {
+	// A から会話を始める
+	lastA, err := processText(clientA, voiceA, nameA,
+		fmt.Sprintf("%sと楽しい会話を始めてください。", nameB))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+		return
+	}
+
+	lastB, err := processText(clientB, voiceB, nameB,
+		fmt.Sprintf("%sが「%s」と言いました。", nameA, lastA))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+		return
+	}
+
+	for {
+		fmt.Print("\n> ")
+		if !scanner.Scan() {
+			return
+		}
+		line := strings.TrimSpace(scanner.Text())
+
+		switch line {
+		case ":stop", ":text", ":ptt", ":vad":
+			return
+		case ":quit", ":q":
+			fmt.Println("またね！")
+			os.Exit(0)
+		case ":help":
+			fmt.Println("デュエット中: Enter で続ける | 文字入力で参加 | :stop で終了")
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			fmt.Println("デュエット中は使えないコマンドです。:stop でデュエット終了")
+			continue
+		}
+
+		var msgA string
+		if line != "" {
+			fmt.Printf("あなた: %s\n", line)
+			msgA = fmt.Sprintf("ユーザーが「%s」と言いました。%sも「%s」と言っています。反応してください。", line, nameB, lastB)
+		} else {
+			msgA = fmt.Sprintf("%sが「%s」と言いました。", nameB, lastB)
+		}
+
+		lastA, err = processText(clientA, voiceA, nameA, msgA)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			continue
+		}
+
+		var msgB string
+		if line != "" {
+			msgB = fmt.Sprintf("ユーザーが「%s」と言い、%sが「%s」と返しました。あなたも反応してください。", line, nameA, lastA)
+		} else {
+			msgB = fmt.Sprintf("%sが「%s」と言いました。", nameA, lastA)
+		}
+
+		lastB, err = processText(clientB, voiceB, nameB, msgB)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			continue
+		}
+	}
 }
 
 func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, whisperClient *stt.Client, charName string, wavData []byte) error {
