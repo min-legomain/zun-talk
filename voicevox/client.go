@@ -9,7 +9,22 @@ import (
 	"net/url"
 )
 
-const SpeedScale = 1.1 // 話速（1.0=標準、上げると速い）
+const defaultSpeed = 1.1
+
+type voiceParams struct {
+	speed      float64
+	pitch      float64
+	intonation float64
+}
+
+var emotionParams = map[string]voiceParams{
+	"喜び":  {speed: 1.2, pitch: 0.05, intonation: 1.3},
+	"悲しみ": {speed: 0.9, pitch: -0.05, intonation: 0.8},
+	"驚き":  {speed: 1.2, pitch: 0.08, intonation: 1.5},
+	"怒り":  {speed: 1.15, pitch: -0.03, intonation: 1.4},
+}
+
+var defaultParams = voiceParams{speed: defaultSpeed, pitch: 0, intonation: 1.0}
 
 type Client struct {
 	baseURL   string
@@ -24,35 +39,47 @@ func (c *Client) SetSpeakerID(id int) {
 	c.speakerID = id
 }
 
-func (c *Client) Synthesize(text string) ([]byte, error) {
+func (c *Client) Synthesize(text, emotion string) ([]byte, error) {
 	query, err := c.audioQuery(text)
 	if err != nil {
 		return nil, fmt.Errorf("audio_query: %w", err)
 	}
 
-	query, err = applySpeedScale(query, SpeedScale)
-	if err != nil {
-		return nil, fmt.Errorf("speedScale: %w", err)
+	params, ok := emotionParams[emotion]
+	if !ok {
+		params = defaultParams
 	}
 
-	wav, err := c.synthesis(query)
+	query, err = applyVoiceParams(query, params)
 	if err != nil {
-		return nil, fmt.Errorf("synthesis: %w", err)
+		return nil, fmt.Errorf("applyVoiceParams: %w", err)
 	}
 
-	return wav, nil
+	return c.synthesis(query)
 }
 
-func applySpeedScale(query json.RawMessage, speed float64) (json.RawMessage, error) {
+func applyVoiceParams(query json.RawMessage, p voiceParams) (json.RawMessage, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(query, &m); err != nil {
 		return nil, err
 	}
-	b, err := json.Marshal(speed)
-	if err != nil {
+	set := func(key string, val float64) error {
+		b, err := json.Marshal(val)
+		if err != nil {
+			return err
+		}
+		m[key] = b
+		return nil
+	}
+	if err := set("speedScale", p.speed); err != nil {
 		return nil, err
 	}
-	m["speedScale"] = b
+	if err := set("pitchScale", p.pitch); err != nil {
+		return nil, err
+	}
+	if err := set("intonationScale", p.intonation); err != nil {
+		return nil, err
+	}
 	return json.Marshal(m)
 }
 

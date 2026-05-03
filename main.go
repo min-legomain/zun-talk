@@ -36,6 +36,11 @@ func (m inputMode) String() string {
 	return "unknown"
 }
 
+type sentenceEvent struct {
+	text    string
+	emotion string
+}
+
 func main() {
 	charKey := flag.String("char", config.DefaultCharKey, "キャラクター選択: zundamon / tsumugi / metan")
 	flag.Parse()
@@ -84,7 +89,6 @@ func main() {
 	fmt.Println()
 
 	for {
-		// VAD は入力なしで直接録音
 		if mode == modeVAD {
 			fmt.Println("話しかけてください | :text / :ptt / :quit を入力して切り替え")
 			wavData, err := recorder.RecordVAD()
@@ -98,7 +102,6 @@ func main() {
 			continue
 		}
 
-		// text / ptt: コマンドを読んでから処理
 		if mode == modePTT {
 			fmt.Println("Enterを押して録音 | :char <名前> でキャラ切替 | :text / :vad / :quit")
 		}
@@ -129,7 +132,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 		} else {
-			if err := processText(claudeClient, voicevoxClient, char.Name, line); err != nil {
+			if _, err := processText(claudeClient, voicevoxClient, char.Name, line); err != nil {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 		}
@@ -171,21 +174,25 @@ func handleCommand(mode *inputMode, line string) bool {
 
 // processText は Claude にテキストを送り、レスポンスを合成・再生する。
 // パイプライン: Claude ストリーム → VoiceVox 合成 → 再生 が並列で動く。
-func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, charName, text string) error {
+// 戻り値の string はキャラクターの返答全文（感情タグなし）。
+func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, charName, text string) (string, error) {
 	fmt.Printf("Claude に送信: %s\n", text)
 	fmt.Printf("%s: ", charName)
 
-	sentenceCh := make(chan string, 8)
+	sentenceCh := make(chan sentenceEvent, 8)
 	wavCh := make(chan []byte, 4)
 	streamErrCh := make(chan error, 1)
 	synthErrCh := make(chan error, 1)
 	playErrCh := make(chan error, 1)
 
+	var fullResponse strings.Builder
+
 	// ステージ1: Claude ストリームを文単位に分割して sentenceCh に送る
 	go func() {
-		err := claudeClient.ChatStream(text, func(sentence string) error {
+		err := claudeClient.ChatStream(text, func(sentence, emotion string) error {
 			fmt.Print(sentence)
-			sentenceCh <- sentence
+			fullResponse.WriteString(sentence)
+			sentenceCh <- sentenceEvent{text: sentence, emotion: emotion}
 			return nil
 		})
 		close(sentenceCh)
@@ -196,11 +203,11 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, c
 	// ステージ2: 文を WAV に合成して wavCh に送る
 	go func() {
 		var firstErr error
-		for sentence := range sentenceCh {
+		for se := range sentenceCh {
 			if firstErr != nil {
 				continue
 			}
-			wav, err := voicevoxClient.Synthesize(sentence)
+			wav, err := voicevoxClient.Synthesize(se.text, se.emotion)
 			if err != nil {
 				firstErr = err
 				continue
@@ -229,15 +236,15 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, c
 	playErr := <-playErrCh
 
 	if streamErr != nil {
-		return fmt.Errorf("Claude API: %w", streamErr)
+		return "", fmt.Errorf("Claude API: %w", streamErr)
 	}
 	if synthErr != nil {
-		return fmt.Errorf("VOICEVOX: %w", synthErr)
+		return "", fmt.Errorf("VOICEVOX: %w", synthErr)
 	}
 	if playErr != nil {
-		return fmt.Errorf("再生エラー: %w", playErr)
+		return "", fmt.Errorf("再生エラー: %w", playErr)
 	}
-	return nil
+	return fullResponse.String(), nil
 }
 
 func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, whisperClient *stt.Client, charName string, wavData []byte) error {
@@ -254,5 +261,6 @@ func processVoice(claudeClient *claude.Client, voicevoxClient *voicevox.Client, 
 	}
 
 	fmt.Printf("あなた: %s\n", text)
-	return processText(claudeClient, voicevoxClient, charName, text)
+	_, err = processText(claudeClient, voicevoxClient, charName, text)
+	return err
 }
