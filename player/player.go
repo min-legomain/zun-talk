@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/ebitengine/oto/v3"
@@ -32,7 +33,6 @@ func PlayWAV(wavData []byte) error {
 		return fmt.Errorf("player not initialized: call Init() first")
 	}
 
-	// WAVヘッダをスキップしてPCMデータだけ取り出す
 	pcm, err := extractPCM(wavData)
 	if err != nil {
 		return fmt.Errorf("wav parse: %w", err)
@@ -49,7 +49,6 @@ func PlayWAV(wavData []byte) error {
 func extractPCM(wavData []byte) ([]byte, error) {
 	r := bytes.NewReader(wavData)
 
-	// RIFFヘッダ確認
 	var riff [4]byte
 	if err := binary.Read(r, binary.LittleEndian, &riff); err != nil {
 		return nil, err
@@ -58,9 +57,11 @@ func extractPCM(wavData []byte) ([]byte, error) {
 		return nil, fmt.Errorf("not a RIFF file")
 	}
 
-	r.Seek(12, 0) // RIFFサイズ(4) + WAVE(4) をスキップ
+	// RIFFサイズ(4) + "WAVE"(4) をスキップして最初のチャンクへ
+	if _, err := r.Seek(12, io.SeekStart); err != nil {
+		return nil, err
+	}
 
-	// dataチャンクを探す
 	for {
 		var chunkID [4]byte
 		var chunkSize uint32
@@ -80,7 +81,8 @@ func extractPCM(wavData []byte) ([]byte, error) {
 		}
 
 		// このチャンクをスキップ
-		pos, _ := r.Seek(0, 1)
-		r.Seek(pos+int64(chunkSize), 0)
+		if _, err := r.Seek(int64(chunkSize), io.SeekCurrent); err != nil {
+			return nil, err
+		}
 	}
 }

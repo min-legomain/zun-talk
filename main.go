@@ -84,64 +84,52 @@ func main() {
 	fmt.Println()
 
 	for {
-		switch mode {
-		case modeText:
-			fmt.Print("> ")
-			if !scanner.Scan() {
-				return
-			}
-			line := strings.TrimSpace(scanner.Text())
-
-			if strings.HasPrefix(line, ":char") {
-				handleCharCommand(line, switchChar, &char)
-				continue
-			}
-			if handleCommand(&mode, line) {
-				continue
-			}
-			if line == "" {
-				continue
-			}
-
-			if err := processText(claudeClient, voicevoxClient, char.Name, line); err != nil {
-				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
-			}
-
-		case modePTT:
-			fmt.Printf("Enterを押して録音 | :char <名前> でキャラ切替 | :text / :vad / :quit\n")
-			fmt.Print("> ")
-			if !scanner.Scan() {
-				return
-			}
-			line := strings.TrimSpace(scanner.Text())
-			if strings.HasPrefix(line, ":char") {
-				handleCharCommand(line, switchChar, &char)
-				continue
-			}
-			if handleCommand(&mode, line) {
-				continue
-			}
-
-			wavData, err := recorder.RecordPushToTalk()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "録音エラー: %v\n", err)
-				continue
-			}
-
-			if err := processVoice(claudeClient, voicevoxClient, whisperClient, char.Name, wavData); err != nil {
-				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
-			}
-
-		case modeVAD:
+		// VAD は入力なしで直接録音
+		if mode == modeVAD {
 			fmt.Println("話しかけてください | :text / :ptt / :quit を入力して切り替え")
-
 			wavData, err := recorder.RecordVAD()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "録音エラー: %v\n", err)
 				continue
 			}
-
 			if err := processVoice(claudeClient, voicevoxClient, whisperClient, char.Name, wavData); err != nil {
+				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			}
+			continue
+		}
+
+		// text / ptt: コマンドを読んでから処理
+		if mode == modePTT {
+			fmt.Println("Enterを押して録音 | :char <名前> でキャラ切替 | :text / :vad / :quit")
+		}
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			return
+		}
+		line := strings.TrimSpace(scanner.Text())
+
+		if strings.HasPrefix(line, ":char") {
+			handleCharCommand(line, switchChar, &char)
+			continue
+		}
+		if handleCommand(&mode, line) {
+			continue
+		}
+		if line == "" {
+			continue
+		}
+
+		if mode == modePTT {
+			wavData, err := recorder.RecordPushToTalk()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "録音エラー: %v\n", err)
+				continue
+			}
+			if err := processVoice(claudeClient, voicevoxClient, whisperClient, char.Name, wavData); err != nil {
+				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
+			}
+		} else {
+			if err := processText(claudeClient, voicevoxClient, char.Name, line); err != nil {
 				fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
 			}
 		}
@@ -181,27 +169,31 @@ func handleCommand(mode *inputMode, line string) bool {
 	return false
 }
 
+// processText は Claude にテキストを送り、レスポンスを合成・再生する。
+// パイプライン: Claude ストリーム → VoiceVox 合成 → 再生 が並列で動く。
 func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, charName, text string) error {
 	fmt.Printf("Claude に送信: %s\n", text)
 	fmt.Printf("%s: ", charName)
 
+	sentenceCh := make(chan string, 8)
 	wavCh := make(chan []byte, 4)
-
+	streamErrCh := make(chan error, 1)
+	synthErrCh := make(chan error, 1)
 	playErrCh := make(chan error, 1)
+
+	// ステージ1: Claude ストリームを文単位に分割して sentenceCh に送る
 	go func() {
-		var firstErr error
-		for wav := range wavCh {
-			if firstErr == nil {
-				if err := player.PlayWAV(wav); err != nil {
-					firstErr = err
-				}
-			}
-		}
-		playErrCh <- firstErr
+		err := claudeClient.ChatStream(text, func(sentence string) error {
+			fmt.Print(sentence)
+			sentenceCh <- sentence
+			return nil
+		})
+		close(sentenceCh)
+		fmt.Println()
+		streamErrCh <- err
 	}()
 
-	sentenceCh := make(chan string, 8)
-	synthErrCh := make(chan error, 1)
+	// ステージ2: 文を WAV に合成して wavCh に送る
 	go func() {
 		var firstErr error
 		for sentence := range sentenceCh {
@@ -219,31 +211,31 @@ func processText(claudeClient *claude.Client, voicevoxClient *voicevox.Client, c
 		synthErrCh <- firstErr
 	}()
 
-	streamErr := claudeClient.ChatStream(text, func(sentence string) error {
-		fmt.Print(sentence)
-		sentenceCh <- sentence
-		return nil
-	})
-	close(sentenceCh)
-	fmt.Println()
-
-	if err := <-synthErrCh; err != nil {
-		<-playErrCh
-		if streamErr != nil {
-			return fmt.Errorf("Claude API: %w", streamErr)
+	// ステージ3: WAV を順番に再生する
+	go func() {
+		var firstErr error
+		for wav := range wavCh {
+			if firstErr == nil {
+				if err := player.PlayWAV(wav); err != nil {
+					firstErr = err
+				}
+			}
 		}
-		return fmt.Errorf("VOICEVOX: %w", err)
-	}
+		playErrCh <- firstErr
+	}()
 
-	if err := <-playErrCh; err != nil {
-		if streamErr != nil {
-			return fmt.Errorf("Claude API: %w", streamErr)
-		}
-		return fmt.Errorf("再生エラー: %w", err)
-	}
+	streamErr := <-streamErrCh
+	synthErr := <-synthErrCh
+	playErr := <-playErrCh
 
 	if streamErr != nil {
 		return fmt.Errorf("Claude API: %w", streamErr)
+	}
+	if synthErr != nil {
+		return fmt.Errorf("VOICEVOX: %w", synthErr)
+	}
+	if playErr != nil {
+		return fmt.Errorf("再生エラー: %w", playErr)
 	}
 	return nil
 }

@@ -17,50 +17,46 @@ const (
 	channels      = 1
 	chunkSize     = 1024
 	maxDuration   = 30 * time.Second
-	silenceThresh = 500  // int16 amplitude threshold for silence detection
+	silenceThresh = 500
 	silenceDur    = 1500 * time.Millisecond
 )
 
-func captureAudio(stopFn func() bool, maxDur time.Duration, chunkCb func([]int16)) ([]int16, error) {
+// captureAudio はマイクからチャンクを読み続け、各チャンクを onChunk に渡す。
+// stopFn が true を返すか maxDur を超えると停止する。
+func captureAudio(stopFn func() bool, maxDur time.Duration, onChunk func([]int16)) error {
 	if err := portaudio.Initialize(); err != nil {
-		return nil, fmt.Errorf("portaudio.Initialize: %w", err)
+		return fmt.Errorf("portaudio.Initialize: %w", err)
 	}
 	defer portaudio.Terminate()
 
 	buf := make([]int16, chunkSize)
 	stream, err := portaudio.OpenDefaultStream(channels, 0, float64(sampleRate), len(buf), buf)
 	if err != nil {
-		return nil, fmt.Errorf("OpenDefaultStream: %w", err)
+		return fmt.Errorf("OpenDefaultStream: %w", err)
 	}
 	defer stream.Close()
 
 	if err := stream.Start(); err != nil {
-		return nil, fmt.Errorf("stream.Start: %w", err)
+		return fmt.Errorf("stream.Start: %w", err)
 	}
 	defer stream.Stop()
 
-	var recorded []int16
 	deadline := time.Now().Add(maxDur)
-
 	for time.Now().Before(deadline) {
 		if err := stream.Read(); err != nil {
-			return nil, fmt.Errorf("stream.Read: %w", err)
+			return fmt.Errorf("stream.Read: %w", err)
 		}
 
 		chunk := make([]int16, len(buf))
 		copy(chunk, buf)
-		recorded = append(recorded, chunk...)
-
-		if chunkCb != nil {
-			chunkCb(chunk)
-		}
+		onChunk(chunk)
 
 		if stopFn != nil && stopFn() {
 			break
 		}
 	}
 
-	return recorded, nil
+	return nil
 }
 
 func encodeWAV(pcm []int16) ([]byte, error) {
@@ -113,7 +109,6 @@ func RecordPushToTalk() ([]byte, error) {
 
 	fmt.Print("Enterを押している間だけ録音します。離すと送信します...\r\n")
 
-	// wait for Enter key press
 	waitForKey(13)
 	fmt.Print("録音中...\r\n")
 
@@ -132,8 +127,10 @@ func RecordPushToTalk() ([]byte, error) {
 		}
 	}
 
-	pcm, err := captureAudio(stopFn, maxDuration, nil)
-	if err != nil {
+	var pcm []int16
+	if err := captureAudio(stopFn, maxDuration, func(chunk []int16) {
+		pcm = append(pcm, chunk...)
+	}); err != nil {
 		return nil, err
 	}
 
@@ -182,12 +179,9 @@ func RecordVAD() ([]byte, error) {
 		return false
 	}
 
-	chunkCb := func(chunk []int16) {
+	if err := captureAudio(stopFn, maxDuration, func(chunk []int16) {
 		allPCM = append(allPCM, chunk...)
-	}
-
-	_, err := captureAudio(stopFn, maxDuration, chunkCb)
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 

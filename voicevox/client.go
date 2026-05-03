@@ -56,14 +56,29 @@ func applySpeedScale(query json.RawMessage, speed float64) (json.RawMessage, err
 	return json.Marshal(m)
 }
 
-func (c *Client) audioQuery(text string) (json.RawMessage, error) {
-	u, _ := url.Parse(c.baseURL + "/audio_query")
+func (c *Client) buildURL(path string, params map[string]string) (string, error) {
+	u, err := url.Parse(c.baseURL + path)
+	if err != nil {
+		return "", fmt.Errorf("url.Parse: %w", err)
+	}
 	q := u.Query()
-	q.Set("text", text)
-	q.Set("speaker", fmt.Sprintf("%d", c.speakerID))
+	for k, v := range params {
+		q.Set(k, v)
+	}
 	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
 
-	resp, err := http.Post(u.String(), "application/json", nil)
+func (c *Client) audioQuery(text string) (json.RawMessage, error) {
+	endpoint, err := c.buildURL("/audio_query", map[string]string{
+		"text":    text,
+		"speaker": fmt.Sprintf("%d", c.speakerID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Post(endpoint, "application/json", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -77,12 +92,14 @@ func (c *Client) audioQuery(text string) (json.RawMessage, error) {
 }
 
 func (c *Client) synthesis(query json.RawMessage) ([]byte, error) {
-	u, _ := url.Parse(c.baseURL + "/synthesis")
-	q := u.Query()
-	q.Set("speaker", fmt.Sprintf("%d", c.speakerID))
-	u.RawQuery = q.Encode()
+	endpoint, err := c.buildURL("/synthesis", map[string]string{
+		"speaker": fmt.Sprintf("%d", c.speakerID),
+	})
+	if err != nil {
+		return nil, err
+	}
 
-	resp, err := http.Post(u.String(), "application/json", bytes.NewReader(query))
+	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(query))
 	if err != nil {
 		return nil, err
 	}
