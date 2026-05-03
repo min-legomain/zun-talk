@@ -21,6 +21,14 @@ type characterDef struct {
 	speakerID int
 }
 
+const conversationGuide = `
+
+## 会話スタイル
+- 相手の話に興味を持ち、感情豊かにリアクションする
+- 話の流れに合わせて自然に質問を返し、会話を続ける
+- 一度に長く話しすぎず、3〜4文程度でテンポよく区切る
+- 相手が話した内容を拾って、自分の言葉でつなげる`
+
 var characterDefs = []characterDef{
 	{jpName: "ずんだもん", key: "zundamon", speakerID: 3},
 	{jpName: "四国めたん", key: "metan", speakerID: 2},
@@ -71,7 +79,7 @@ func LoadCharacters(path string) error {
 		if !ok {
 			continue
 		}
-		prompt := "あなたは" + name + "です。以下の設定に従って話してください。\n\n" + body
+		prompt := "あなたは" + name + "です。以下の設定に従って話してください。\n\n" + body + conversationGuide
 		chars[key] = Character{
 			Name:      name,
 			SpeakerID: keyToSpeakerID[key],
