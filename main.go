@@ -47,7 +47,7 @@ func main() {
 
 	cfg := config.Load()
 
-	if err := config.LoadCharacters(cfg.CharSettingsPath); err != nil {
+	if err := config.LoadCharacters(cfg.CharSettingsPath, cfg.ConvGuidePath); err != nil {
 		log.Fatalf("キャラクター設定の読み込みに失敗: %v", err)
 	}
 

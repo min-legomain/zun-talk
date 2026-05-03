@@ -11,6 +11,7 @@ const (
 	DefaultVoicevoxURL      = "http://localhost:50021"
 	DefaultCharKey          = "zundamon"
 	DefaultCharSettingsPath = "./config/character-settings.md"
+	DefaultConvGuidePath    = "./config/conversation-guide.md"
 	DefaultWhisperBinary    = "./whisper-cpp"
 	DefaultWhisperModel     = "./models/ggml-medium.bin"
 )
@@ -20,23 +21,6 @@ type characterDef struct {
 	key       string
 	speakerID int
 }
-
-const conversationGuide = `
-
-## 会話スタイル
-- これは音声会話アプリなので、声に出して自然に聞こえる話し方をする
-- マークダウン記法（##、**、-、| など）は絶対に使わない
-- 箇条書きや表ではなく、普通の会話文で話す
-- 相手の話に興味を持ち、感情豊かにリアクションする
-- 一度に長く話しすぎず、3〜4文程度でテンポよく区切る
-- 複雑な内容は一気に説明せず、ひとつ話したら相手の反応を待つ
-- 話の流れに合わせて自然に質問を返し、会話を続ける
-
-## 感情タグ
-- 毎回の返答の冒頭に、その内容の感情に合ったタグを必ず1つ書く
-- 使えるタグ: [E:喜び] [E:悲しみ] [E:驚き] [E:怒り] [E:普通]
-- タグの直後から返答本文を続ける（例: [E:喜び]わあ、それすごいなのだ！）
-- タグのみの行にしない。必ず本文と一続きにする`
 
 var characterDefs = []characterDef{
 	{jpName: "ずんだもん", key: "zundamon", speakerID: 3},
@@ -52,11 +36,17 @@ type Character struct {
 
 var Characters map[string]Character
 
-func LoadCharacters(path string) error {
-	data, err := os.ReadFile(path)
+func LoadCharacters(charPath, guidePath string) error {
+	charData, err := os.ReadFile(charPath)
 	if err != nil {
 		return fmt.Errorf("character settings: %w", err)
 	}
+
+	guideData, err := os.ReadFile(guidePath)
+	if err != nil {
+		return fmt.Errorf("conversation guide: %w", err)
+	}
+	guide := "\n\n" + strings.TrimSpace(string(guideData))
 
 	jpNameToKey := make(map[string]string, len(characterDefs))
 	keyToSpeakerID := make(map[string]int, len(characterDefs))
@@ -65,7 +55,7 @@ func LoadCharacters(path string) error {
 		keyToSpeakerID[d.key] = d.speakerID
 	}
 
-	content := string(data)
+	content := string(charData)
 	if strings.HasPrefix(content, "## ") {
 		content = "\n" + content
 	}
@@ -88,7 +78,7 @@ func LoadCharacters(path string) error {
 		if !ok {
 			continue
 		}
-		prompt := "あなたは" + name + "です。以下の設定に従って話してください。\n\n" + body + conversationGuide
+		prompt := "あなたは" + name + "です。以下の設定に従って話してください。\n\n" + body + guide
 		chars[key] = Character{
 			Name:      name,
 			SpeakerID: keyToSpeakerID[key],
@@ -97,7 +87,7 @@ func LoadCharacters(path string) error {
 	}
 
 	if len(chars) == 0 {
-		return fmt.Errorf("キャラクターが見つかりません: %s", path)
+		return fmt.Errorf("キャラクターが見つかりません: %s", charPath)
 	}
 	Characters = chars
 	return nil
@@ -109,6 +99,7 @@ type Config struct {
 	WhisperModel     string
 	VoicevoxURL      string
 	CharSettingsPath string
+	ConvGuidePath    string
 }
 
 func Load() *Config {
@@ -118,6 +109,7 @@ func Load() *Config {
 		WhisperModel:     envOr("WHISPER_MODEL", DefaultWhisperModel),
 		VoicevoxURL:      envOr("VOICEVOX_URL", DefaultVoicevoxURL),
 		CharSettingsPath: envOr("CHAR_SETTINGS", DefaultCharSettingsPath),
+		ConvGuidePath:    envOr("CONV_GUIDE", DefaultConvGuidePath),
 	}
 }
 
