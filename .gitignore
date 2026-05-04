@@ -1,2 +1,15 @@
 zun-talk
 zundaclaude
+zun-talk-cli
+.DS_Store
+
+# ビルド成果物
+build/bin/
+node_modules/
+
+# キャラクター画像（再配布不可）
+frontend/images/
+frontend/src/assets/images/
+frontend/dist/assets/metan_normal-BOmFQRBi.png
+frontend/dist/assets/tsumugi_normal-ClISktLR.png
+frontend/dist/assets/zundamon_normal-DwTF9-Uq.png
