@@ -118,27 +118,35 @@ type Config struct {
 }
 
 func Load() *Config {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
-		apiKey = readAPIKeyFromFile()
+	file := loadDotEnv()
+
+	get := func(envKey, fileKey, fallback string) string {
+		if v := os.Getenv(envKey); v != "" {
+			return v
+		}
+		if v := file[fileKey]; v != "" {
+			return v
+		}
+		return fallback
 	}
 
 	return &Config{
-		AnthropicAPIKey:  apiKey,
-		WhisperBinary:    envOr("WHISPER_BINARY", DefaultWhisperBinary),
-		WhisperModel:     envOr("WHISPER_MODEL", DefaultWhisperModel),
-		VoicevoxURL:      envOr("VOICEVOX_URL", DefaultVoicevoxURL),
-		CharSettingsPath: envOr("CHAR_SETTINGS", DefaultCharSettingsPath),
-		ConvGuidePath:    envOr("CONV_GUIDE", DefaultConvGuidePath),
+		AnthropicAPIKey:  get("ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY", ""),
+		WhisperBinary:    get("WHISPER_BINARY", "WHISPER_BINARY", DefaultWhisperBinary),
+		WhisperModel:     get("WHISPER_MODEL", "WHISPER_MODEL", DefaultWhisperModel),
+		VoicevoxURL:      get("VOICEVOX_URL", "VOICEVOX_URL", DefaultVoicevoxURL),
+		CharSettingsPath: get("CHAR_SETTINGS", "CHAR_SETTINGS", DefaultCharSettingsPath),
+		ConvGuidePath:    get("CONV_GUIDE", "CONV_GUIDE", DefaultConvGuidePath),
 	}
 }
 
-// readAPIKeyFromFile は GUI アプリ向けに設定ファイルから API キーを読む。
+// loadDotEnv は GUI アプリ向けに設定ファイルを読み KEY=VALUE マップを返す。
 // ~/Library/Application Support/zun-talk/.env または ~/.config/zun-talk/.env を参照する。
-func readAPIKeyFromFile() string {
+func loadDotEnv() map[string]string {
+	result := map[string]string{}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return result
 	}
 	candidates := []string{
 		filepath.Join(home, "Library", "Application Support", "zun-talk", ".env"),
@@ -151,12 +159,18 @@ func readAPIKeyFromFile() string {
 		}
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if after, ok := strings.CutPrefix(line, "ANTHROPIC_API_KEY="); ok {
-				return strings.Trim(after, `"'`)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			k, v, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			result[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), `"'`)
 		}
+		return result
 	}
-	return ""
+	return result
 }
 
 func envOr(key, fallback string) string {
