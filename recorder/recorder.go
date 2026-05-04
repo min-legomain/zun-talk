@@ -2,6 +2,7 @@ package recorder
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -99,6 +100,8 @@ func rms(samples []int16) float64 {
 	return math.Sqrt(sum / float64(len(samples)))
 }
 
+// ── CLI 向け録音（既存） ────────────────────────────────────────���─────
+
 func RecordPushToTalk() ([]byte, error) {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
@@ -149,16 +152,95 @@ func waitForKey(key byte) {
 
 func RecordVAD() ([]byte, error) {
 	fmt.Println("話し始めてください（無音が続くと自動で送信）...")
+	return recordVADInternal(context.Background())
+}
 
+// ── GUI 向け録音 ──────────────────────────────────────────────────────
+
+// AsyncRecording はバックグラウンドで動作する録音セッションを表す。
+type AsyncRecording struct {
+	stopCh chan struct{}
+	wavCh  chan []byte
+	errCh  chan error
+}
+
+// StartAsync はバックグラウンドで録音を開始する。
+// Stop() を呼び出すと録音を停止し、WAV データを返す。
+func StartAsync() (*AsyncRecording, error) {
+	rec := &AsyncRecording{
+		stopCh: make(chan struct{}),
+		wavCh:  make(chan []byte, 1),
+		errCh:  make(chan error, 1),
+	}
+	go func() {
+		var pcm []int16
+		err := captureAudio(func() bool {
+			select {
+			case <-rec.stopCh:
+				return true
+			default:
+				return false
+			}
+		}, maxDuration, func(chunk []int16) {
+			pcm = append(pcm, chunk...)
+		})
+		if err != nil {
+			rec.errCh <- err
+			return
+		}
+		wav, err := encodeWAV(pcm)
+		if err != nil {
+			rec.errCh <- err
+			return
+		}
+		rec.wavCh <- wav
+	}()
+	return rec, nil
+}
+
+// Stop は録音を停止して WAV データを返す。
+func (r *AsyncRecording) Stop() ([]byte, error) {
+	select {
+	case <-r.stopCh:
+		// already stopped
+	default:
+		close(r.stopCh)
+	}
+	select {
+	case wav := <-r.wavCh:
+		return wav, nil
+	case err := <-r.errCh:
+		return nil, err
+	}
+}
+
+// RecordVADWithContext は ctx がキャンセルされるか無音を検出するまで録音する。
+// VAD ループ内で繰り返し呼び出すことを想定している。
+func RecordVADWithContext(ctx context.Context) ([]byte, error) {
+	wav, err := recordVADInternal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return wav, nil
+}
+
+func recordVADInternal(ctx context.Context) ([]byte, error) {
 	var allPCM []int16
 	silenceStart := time.Time{}
 	speaking := false
 
 	stopFn := func() bool {
+		select {
+		case <-ctx.Done():
+			return true
+		default:
+		}
 		if len(allPCM) == 0 {
 			return false
 		}
-
 		windowSize := chunkSize
 		if len(allPCM) < windowSize {
 			windowSize = len(allPCM)
