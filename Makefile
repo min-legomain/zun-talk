@@ -1,7 +1,9 @@
 BIN     := zun-talk
 BIN_CLI := zun-talk-cli
+VERSION := $(shell git describe --tags --always --dirty)
+DIST    := dist
 
-.PHONY: build build-cli run run-cli dev clean
+.PHONY: build build-cli run run-cli dev package clean
 
 # GUI モード (Wails) のプロダクションビルド
 build:
@@ -19,6 +21,14 @@ dev:
 run-cli: build-cli
 	./$(BIN_CLI)
 
+package: build
+	mkdir -p $(DIST)
+	hdiutil create -volname "$(BIN)" \
+		-srcfolder "build/bin/$(BIN).app" \
+		-ov -format UDZO \
+		"$(DIST)/$(BIN)-$(VERSION).dmg"
+	@echo "✓ $(DIST)/$(BIN)-$(VERSION).dmg"
+
 clean:
 	rm -f $(BIN) $(BIN_CLI)
-	rm -rf frontend/dist
+	rm -rf frontend/dist $(DIST)
