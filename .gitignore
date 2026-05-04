@@ -6,7 +6,9 @@ zun-talk-cli
 
 # ビルド成果物
 build/bin/
+build/darwin/Info.plist
 node_modules/
+dist/
 
 # キャラクター画像（再配布不可）
 frontend/images/
