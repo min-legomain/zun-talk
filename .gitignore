@@ -2,6 +2,7 @@ zun-talk
 zundaclaude
 zun-talk-cli
 .DS_Store
+.claude/
 
 # ビルド成果物
 build/bin/
